@@ -90,18 +90,24 @@ app.add_middleware(
 )
 
 # 1. Получение списка файлов
+# Обновленный эндпоинт получения файлов
 @app.get("/api/files")
-async def get_files(user_id: int, folder_id: str = None, source: str = None):
+async def get_files(user_id: int, folder_id: str = None, mode: str = 'strict'):
+    # mode='strict' -> показывать только то, что лежит конкретно тут (для Папок)
+    # mode='global' -> показывать всё рекурсивно (для Галереи/Фильтров)
+    
     query = supabase.table("items").select("*").eq("user_id", user_id)
     
-    # Если мы специально просим файлы только из корня (для окна выбора)
-    if source == 'root':
-        query = query.is_("parent_id", "null").neq("type", "folder")
+    if mode == 'global':
+        # Глобальный режим: Игнорируем parent_id, просто берем все файлы
+        # Но папки в глобальном списке нам не нужны, только контент
+        query = query.neq("type", "folder")
     
-    # Обычная логика навигации
     elif folder_id and folder_id != "null" and folder_id != "root":
+        # Внутри конкретной папки
         query = query.eq("parent_id", folder_id)
     else:
+        # В корне (только то, что не рассортировано, или папки корня)
         query = query.is_("parent_id", "null")
         
     query = query.order("type", desc=True).order("created_at", desc=True)
