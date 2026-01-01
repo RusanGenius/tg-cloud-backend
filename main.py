@@ -91,16 +91,19 @@ app.add_middleware(
 
 # 1. Получение списка файлов
 @app.get("/api/files")
-async def get_files(user_id: int, folder_id: str = None):
+async def get_files(user_id: int, folder_id: str = None, source: str = None):
     query = supabase.table("items").select("*").eq("user_id", user_id)
     
-    # Логика папок
-    if folder_id and folder_id != "null" and folder_id != "root":
+    # Если мы специально просим файлы только из корня (для окна выбора)
+    if source == 'root':
+        query = query.is_("parent_id", "null").neq("type", "folder")
+    
+    # Обычная логика навигации
+    elif folder_id and folder_id != "null" and folder_id != "root":
         query = query.eq("parent_id", folder_id)
     else:
         query = query.is_("parent_id", "null")
         
-    # Сортировка: сначала папки, потом файлы
     query = query.order("type", desc=True).order("created_at", desc=True)
     return query.execute().data
 
@@ -186,6 +189,20 @@ async def get_preview(file_id: str):
         # Если ошибка, возвращаем пустоту или дефолтную картинку
         print(f"Preview error: {e}")
         raise HTTPException(status_code=404)
+
+# 6. ПЕРЕМЕЩЕНИЕ ФАЙЛОВ (Добавить файл в папку)
+class MoveRequest(BaseModel):
+    file_id: str     # ID записи в таблице items (UUID)
+    folder_id: str   # ID папки, куда кладем
+
+@app.post("/api/move_file")
+async def move_file(req: MoveRequest):
+    try:
+        # Просто обновляем parent_id у файла
+        supabase.table("items").update({"parent_id": req.folder_id}).eq("id", req.file_id).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 async def root():
