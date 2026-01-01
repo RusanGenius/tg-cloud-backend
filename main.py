@@ -147,9 +147,23 @@ class DeleteRequest(BaseModel):
 
 @app.post("/api/delete")
 async def delete_item(req: DeleteRequest):
-    # Удаляем запись из БД по её уникальному UUID
-    supabase.table("items").delete().eq("id", req.item_id).execute()
-    return {"status": "deleted"}
+    try:
+        # Сначала проверяем, папка это или нет
+        # (Это дополнительный запрос, но для надежности полезно)
+        item = supabase.table("items").select("type").eq("id", req.item_id).execute()
+        
+        if item.data and item.data[0]['type'] == 'folder':
+            # Если это папка, сначала "освобождаем" файлы внутри неё
+            # Делаем update: ставим parent_id = null всем файлам, которые лежали в этой папке
+            supabase.table("items").update({"parent_id": None}).eq("parent_id", req.item_id).execute()
+
+        # Теперь спокойно удаляем сам объект (файл или папку)
+        supabase.table("items").delete().eq("id", req.item_id).execute()
+        return {"status": "deleted"}
+        
+    except Exception as e:
+        print(f"Delete error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # 4. Скачивание файла (отправка в ТГ)
 class DownloadRequest(BaseModel):
