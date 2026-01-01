@@ -1,5 +1,6 @@
 import os
 import asyncio
+from typing import Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Response
@@ -103,25 +104,33 @@ async def get_files(user_id: int, folder_id: str = None):
     query = query.order("type", desc=True).order("created_at", desc=True)
     return query.execute().data
 
-# 2. Создание папки
+# 2. Создание папки (ИСПРАВЛЕННОЕ)
 class FolderRequest(BaseModel):
     user_id: int
     name: str
-    parent_id: str = None
+    parent_id: Optional[str] = None # Явно разрешаем null
 
 @app.post("/api/create_folder")
 async def create_folder(req: FolderRequest):
-    # Превращаем пустую строку в None для SQL
-    parent = req.parent_id if req.parent_id and req.parent_id != "null" else None
-    
-    new_folder = {
-        "user_id": req.user_id,
-        "name": req.name,
-        "type": "folder",
-        "parent_id": parent
-    }
-    supabase.table("items").insert(new_folder).execute()
-    return {"status": "ok"}
+    try:
+        # Логика: если пришло "null" строкой или None -> записываем как None (SQL NULL)
+        parent = req.parent_id
+        if parent == "null" or parent == "":
+            parent = None
+        
+        new_folder = {
+            "user_id": req.user_id,
+            "name": req.name,
+            "type": "folder",
+            "parent_id": parent
+        }
+        # .execute() возвращает результат, если ошибка - вылетит исключение
+        supabase.table("items").insert(new_folder).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"Error creating folder: {e}")
+        # Возвращаем ошибку 500, чтобы фронтенд понял, что беда
+        raise HTTPException(status_code=500, detail=str(e))
 
 # 3. Удаление элемента
 class DeleteRequest(BaseModel):
