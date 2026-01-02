@@ -30,15 +30,9 @@ dp = Dispatcher()
 async def command_start(message: Message, command: CommandObject):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
-    first_name = message.from_user.first_name or ""
     
-    # Обновляем данные юзера (добавили first_name для красоты в профиле)
     try:
-        supabase.table("users").upsert({
-            "id": user_id, 
-            "username": username,
-            # В реальной БД лучше добавить колонку first_name, но пока так
-        }).execute()
+        supabase.table("users").upsert({"id": user_id, "username": username}).execute()
     except:
         pass
 
@@ -51,7 +45,7 @@ async def command_start(message: Message, command: CommandObject):
                 file_data = res.data[0]
                 await message.answer(f"📂 Вам отправили файл: <b>{file_data['name']}</b>", parse_mode="HTML")
                 if file_data['type'] == 'folder':
-                     await message.answer("Этой папкой поделились, но шеринг папок пока в разработке.")
+                     await message.answer("Шеринг папок в разработке.")
                      return
                 try:
                     f_id = file_data['file_id']
@@ -63,7 +57,7 @@ async def command_start(message: Message, command: CommandObject):
                     else:
                         await message.answer_document(f_id)
                 except:
-                    await message.answer("Ошибка при отправке файла.")
+                    await message.answer("Ошибка отправки.")
             else:
                 await message.answer("Файл не найден.")
         except:
@@ -124,15 +118,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# НОВЫЙ ЭНДПОИНТ: СТАТИСТИКА ПРОФИЛЯ
+# --- ЭНДПОИНТЫ ---
+
 @app.get("/api/profile")
 async def get_profile_stats(user_id: int):
     try:
-        # Получаем все файлы юзера для подсчета
-        # В идеале делать это SQL запросом count(), но через supabase-py проще так для MVP
         res = supabase.table("items").select("type, name, size").eq("user_id", user_id).execute()
         items = res.data
-        
         total_files = 0
         total_size_bytes = 0
         count_photos = 0
@@ -142,49 +134,45 @@ async def get_profile_stats(user_id: int):
         
         for i in items:
             total_size_bytes += (i['size'] or 0)
-            
-            if i['type'] == 'folder':
-                count_folders += 1
+            if i['type'] == 'folder': count_folders += 1
             else:
                 total_files += 1
                 name = i['name'].lower()
-                if name.endswith(('.jpg', '.jpeg', '.png')):
-                    count_photos += 1
-                elif name.endswith(('.mp4', '.mov')):
-                    count_videos += 1
-                else:
-                    count_docs += 1
+                if name.endswith(('.jpg', '.jpeg', '.png')): count_photos += 1
+                elif name.endswith(('.mp4', '.mov')): count_videos += 1
+                else: count_docs += 1
         
-        # Конвертируем байты в мегабайты
         total_size_mb = round(total_size_bytes / (1024 * 1024), 2)
-        
         return {
             "total_files": total_files,
             "total_size_mb": total_size_mb,
-            "counts": {
-                "photos": count_photos,
-                "videos": count_videos,
-                "docs": count_docs,
-                "folders": count_folders
-            }
+            "counts": {"photos": count_photos, "videos": count_videos, "docs": count_docs, "folders": count_folders}
         }
     except Exception as e:
-        print(e)
         raise HTTPException(status_code=500, detail="Stats error")
 
 @app.get("/api/files")
 async def get_files(user_id: int, folder_id: str = None, mode: str = 'strict'):
     query = supabase.table("items").select("*").eq("user_id", user_id)
-    if mode == 'global':
-        query = query.neq("type", "folder")
-    elif mode == 'folders':
-        query = query.eq("type", "folder")
-    elif folder_id and folder_id != "null" and folder_id != "root":
-        query = query.eq("parent_id", folder_id)
-    else:
-        query = query.is_("parent_id", "null")
+    if mode == 'global': query = query.neq("type", "folder")
+    elif mode == 'folders': query = query.eq("type", "folder")
+    elif folder_id and folder_id != "null" and folder_id != "root": query = query.eq("parent_id", folder_id)
+    else: query = query.is_("parent_id", "null")
     query = query.order("type", desc=True).order("created_at", desc=True)
     return query.execute().data
+
+# НОВОЕ: Удаление ВСЕХ данных пользователя
+class DeleteAllRequest(BaseModel):
+    user_id: int
+
+@app.post("/api/delete_all")
+async def delete_all_data(req: DeleteAllRequest):
+    try:
+        # Просто удаляем всё, где user_id совпадает
+        supabase.table("items").delete().eq("user_id", req.user_id).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 class FolderRequest(BaseModel):
     user_id: int
@@ -238,12 +226,9 @@ async def download_file(req: DownloadRequest):
     try:
         is_photo = req.file_name.lower().endswith(('.jpg', '.jpeg', '.png'))
         is_video = req.file_name.lower().endswith(('.mp4', '.mov'))
-        if is_photo:
-            await bot.send_photo(req.user_id, req.file_id, caption="📸")
-        elif is_video:
-            await bot.send_video(req.user_id, req.file_id, caption="🎥")
-        else:
-            await bot.send_document(req.user_id, req.file_id, caption="📄")
+        if is_photo: await bot.send_photo(req.user_id, req.file_id, caption="📸")
+        elif is_video: await bot.send_video(req.user_id, req.file_id, caption="🎥")
+        else: await bot.send_document(req.user_id, req.file_id, caption="📄")
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -275,4 +260,4 @@ async def move_file(req: MoveRequest):
 
 @app.get("/")
 async def root():
-    return {"message": "Tg Cloud v2.4 Settings Profile"}
+    return {"message": "Tg Cloud v2.5 Lang & DeleteAll"}
