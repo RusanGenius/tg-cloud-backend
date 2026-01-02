@@ -63,7 +63,7 @@ async def command_start(message: Message, command: CommandObject):
         except:
              await message.answer("Некорректная ссылка.")
     else:
-        await message.answer("Привет! Это твое облако ☁️")
+        await message.answer("Привет! Чтобы сохранить файл отправь его в чат.")
 
 @dp.message(F.document | F.photo | F.video | F.audio)
 async def handle_files(message: Message):
