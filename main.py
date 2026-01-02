@@ -25,13 +25,20 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- БОТ И START ---
+# --- БОТ ---
 @dp.message(CommandStart())
 async def command_start(message: Message, command: CommandObject):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
+    first_name = message.from_user.first_name or ""
+    
+    # Обновляем данные юзера (добавили first_name для красоты в профиле)
     try:
-        supabase.table("users").upsert({"id": user_id, "username": username}).execute()
+        supabase.table("users").upsert({
+            "id": user_id, 
+            "username": username,
+            # В реальной БД лучше добавить колонку first_name, но пока так
+        }).execute()
     except:
         pass
 
@@ -43,11 +50,9 @@ async def command_start(message: Message, command: CommandObject):
             if res.data:
                 file_data = res.data[0]
                 await message.answer(f"📂 Вам отправили файл: <b>{file_data['name']}</b>", parse_mode="HTML")
-                
                 if file_data['type'] == 'folder':
                      await message.answer("Этой папкой поделились, но шеринг папок пока в разработке.")
                      return
-
                 try:
                     f_id = file_data['file_id']
                     name = file_data['name'].lower()
@@ -119,10 +124,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# НОВЫЙ ЭНДПОИНТ: СТАТИСТИКА ПРОФИЛЯ
+@app.get("/api/profile")
+async def get_profile_stats(user_id: int):
+    try:
+        # Получаем все файлы юзера для подсчета
+        # В идеале делать это SQL запросом count(), но через supabase-py проще так для MVP
+        res = supabase.table("items").select("type, name, size").eq("user_id", user_id).execute()
+        items = res.data
+        
+        total_files = 0
+        total_size_bytes = 0
+        count_photos = 0
+        count_videos = 0
+        count_docs = 0
+        count_folders = 0
+        
+        for i in items:
+            total_size_bytes += (i['size'] or 0)
+            
+            if i['type'] == 'folder':
+                count_folders += 1
+            else:
+                total_files += 1
+                name = i['name'].lower()
+                if name.endswith(('.jpg', '.jpeg', '.png')):
+                    count_photos += 1
+                elif name.endswith(('.mp4', '.mov')):
+                    count_videos += 1
+                else:
+                    count_docs += 1
+        
+        # Конвертируем байты в мегабайты
+        total_size_mb = round(total_size_bytes / (1024 * 1024), 2)
+        
+        return {
+            "total_files": total_files,
+            "total_size_mb": total_size_mb,
+            "counts": {
+                "photos": count_photos,
+                "videos": count_videos,
+                "docs": count_docs,
+                "folders": count_folders
+            }
+        }
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Stats error")
+
 @app.get("/api/files")
 async def get_files(user_id: int, folder_id: str = None, mode: str = 'strict'):
     query = supabase.table("items").select("*").eq("user_id", user_id)
-    
     if mode == 'global':
         query = query.neq("type", "folder")
     elif mode == 'folders':
@@ -131,7 +183,6 @@ async def get_files(user_id: int, folder_id: str = None, mode: str = 'strict'):
         query = query.eq("parent_id", folder_id)
     else:
         query = query.is_("parent_id", "null")
-        
     query = query.order("type", desc=True).order("created_at", desc=True)
     return query.execute().data
 
@@ -151,7 +202,6 @@ async def create_folder(req: FolderRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# НОВАЯ ФУНКЦИЯ: Переименование
 class RenameRequest(BaseModel):
     item_id: str
     new_name: str
@@ -225,4 +275,4 @@ async def move_file(req: MoveRequest):
 
 @app.get("/")
 async def root():
-    return {"message": "Tg Cloud v2.3 Renaming & Nested Folders"}
+    return {"message": "Tg Cloud v2.4 Settings Profile"}
