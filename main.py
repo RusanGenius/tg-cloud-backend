@@ -12,7 +12,7 @@ from supabase import create_client, Client
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
-from aiogram.filters import CommandStart, CommandObject # Импорт для обработки /start аргументов
+from aiogram.filters import CommandStart, CommandObject
 import aiohttp 
 
 # --- КОНФИГУРАЦИЯ ---
@@ -25,58 +25,60 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- ОБРАБОТЧИК /START (С Deep Linking) ---
+# --- ОБРАБОТЧИК /START (ИСПРАВЛЕННЫЙ) ---
 @dp.message(CommandStart())
 async def command_start(message: Message, command: CommandObject):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
     
-    # Регистрируем юзера
     try:
         supabase.table("users").upsert({"id": user_id, "username": username}).execute()
     except:
         pass
 
-    args = command.args # Получаем аргументы после /start
+    args = command.args
     
+    # Ищем по UUID (file_uuid), так как file_id слишком длинный для start-параметра
     if args and args.startswith("file_"):
-        # Формат: file_AgACAl... (Telegram File ID)
-        requested_file_id = args.replace("file_", "")
+        requested_uuid = args.replace("file_", "")
         
-        # Ищем файл в БД (проверка безопасности: есть ли такой файл вообще)
-        # В этой версии доступ ПУБЛИЧНЫЙ (любой, у кого ссылка, получит файл)
-        # Мы ищем по file_id, чтобы найти его тип и имя
-        res = supabase.table("items").select("*").eq("file_id", requested_file_id).limit(1).execute()
-        
-        if res.data:
-            file_data = res.data[0]
-            await message.answer(f"📂 Вам отправили файл: <b>{file_data['name']}</b>", parse_mode="HTML")
+        # Запрос в БД по ID (UUID), а не file_id
+        try:
+            res = supabase.table("items").select("*").eq("id", requested_uuid).limit(1).execute()
             
-            # Отправляем файл
-            try:
-                if file_data['name'].lower().endswith(('.jpg', '.jpeg', '.png')):
-                    await message.answer_photo(file_data['file_id'])
-                elif file_data['name'].lower().endswith(('.mp4', '.mov')):
-                    await message.answer_video(file_data['file_id'])
-                else:
-                    await message.answer_document(file_data['file_id'])
-            except Exception as e:
-                await message.answer("Ошибка при отправке файла.")
-        else:
-            await message.answer("Файл не найден или был удален.")
+            if res.data:
+                file_data = res.data[0]
+                await message.answer(f"📂 Вам отправили файл: <b>{file_data['name']}</b>", parse_mode="HTML")
+                
+                if file_data['type'] == 'folder':
+                     await message.answer("Этой папкой поделились, но шеринг папок пока в разработке.")
+                     return
+
+                # Отправка файла
+                try:
+                    f_id = file_data['file_id']
+                    name = file_data['name'].lower()
+                    if name.endswith(('.jpg', '.jpeg', '.png')):
+                        await message.answer_photo(f_id)
+                    elif name.endswith(('.mp4', '.mov')):
+                        await message.answer_video(f_id)
+                    else:
+                        await message.answer_document(f_id)
+                except Exception as e:
+                    await message.answer("Ошибка при отправке файла (возможно, он устарел).")
+            else:
+                await message.answer("Файл не найден или был удален.")
+        except Exception:
+             await message.answer("Некорректная ссылка.")
             
     else:
-        # Обычный старт
-        await message.answer("Привет! Это твое облако ☁️\nНажми кнопку ниже, чтобы открыть.", 
-                             reply_markup=None) # Здесь можно прикрепить Menu Button кодом, если нужно
+        await message.answer("Привет! Это твое облако ☁️")
 
 
-# --- ОСТАЛЬНОЙ БОТ (ЗАГРУЗКА ФАЙЛОВ) ---
+# --- БОТ (ЗАГРУЗКА) ---
 @dp.message(F.document | F.photo | F.video | F.audio)
 async def handle_files(message: Message):
     user_id = message.from_user.id
-    username = message.from_user.username or "Unknown"
-    
     file_id = None
     file_name = "Без названия"
     file_size = 0
@@ -110,7 +112,7 @@ async def handle_files(message: Message):
             print(e)
             await message.answer("Ошибка сохранения.")
 
-# --- API СЕРВЕР ---
+# --- API ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(dp.start_polling(bot))
@@ -127,18 +129,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ИСПРАВЛЕННЫЙ GET /files
 @app.get("/api/files")
 async def get_files(user_id: int, folder_id: str = None, mode: str = 'strict'):
     query = supabase.table("items").select("*").eq("user_id", user_id)
+    
     if mode == 'global':
+        # Только файлы, без папок
         query = query.neq("type", "folder")
+    
+    elif mode == 'folders':
+        # НОВЫЙ РЕЖИМ: Только папки (для модалки выбора)
+        query = query.eq("type", "folder")
+        
     elif folder_id and folder_id != "null" and folder_id != "root":
+        # Строго внутри папки
         query = query.eq("parent_id", folder_id)
     else:
+        # Строго в корне
         query = query.is_("parent_id", "null")
+        
     query = query.order("type", desc=True).order("created_at", desc=True)
     return query.execute().data
 
+# ... Остальные эндпоинты без изменений (Create, Delete, Download, Preview, Move) ...
 class FolderRequest(BaseModel):
     user_id: int
     name: str
@@ -167,7 +181,6 @@ async def delete_item(req: DeleteRequest):
         supabase.table("items").delete().eq("id", req.item_id).execute()
         return {"status": "deleted"}
     except Exception as e:
-        print(f"Delete error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 class DownloadRequest(BaseModel):
@@ -205,7 +218,7 @@ async def get_preview(file_id: str):
 
 class MoveRequest(BaseModel):
     file_id: str
-    folder_id: Optional[str] # Может быть None (корень)
+    folder_id: Optional[str]
 
 @app.post("/api/move_file")
 async def move_file(req: MoveRequest):
@@ -217,4 +230,4 @@ async def move_file(req: MoveRequest):
 
 @app.get("/")
 async def root():
-    return {"message": "Telegram Cloud v2.1 Working"}
+    return {"message": "Telegram Cloud v2.2 Fixed"}
