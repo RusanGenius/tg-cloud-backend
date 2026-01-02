@@ -25,27 +25,21 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- ОБРАБОТЧИК /START (ИСПРАВЛЕННЫЙ) ---
+# --- БОТ И START ---
 @dp.message(CommandStart())
 async def command_start(message: Message, command: CommandObject):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
-    
     try:
         supabase.table("users").upsert({"id": user_id, "username": username}).execute()
     except:
         pass
 
     args = command.args
-    
-    # Ищем по UUID (file_uuid), так как file_id слишком длинный для start-параметра
     if args and args.startswith("file_"):
         requested_uuid = args.replace("file_", "")
-        
-        # Запрос в БД по ID (UUID), а не file_id
         try:
             res = supabase.table("items").select("*").eq("id", requested_uuid).limit(1).execute()
-            
             if res.data:
                 file_data = res.data[0]
                 await message.answer(f"📂 Вам отправили файл: <b>{file_data['name']}</b>", parse_mode="HTML")
@@ -54,7 +48,6 @@ async def command_start(message: Message, command: CommandObject):
                      await message.answer("Этой папкой поделились, но шеринг папок пока в разработке.")
                      return
 
-                # Отправка файла
                 try:
                     f_id = file_data['file_id']
                     name = file_data['name'].lower()
@@ -64,18 +57,15 @@ async def command_start(message: Message, command: CommandObject):
                         await message.answer_video(f_id)
                     else:
                         await message.answer_document(f_id)
-                except Exception as e:
-                    await message.answer("Ошибка при отправке файла (возможно, он устарел).")
+                except:
+                    await message.answer("Ошибка при отправке файла.")
             else:
-                await message.answer("Файл не найден или был удален.")
-        except Exception:
+                await message.answer("Файл не найден.")
+        except:
              await message.answer("Некорректная ссылка.")
-            
     else:
         await message.answer("Привет! Это твое облако ☁️")
 
-
-# --- БОТ (ЗАГРУЗКА) ---
 @dp.message(F.document | F.photo | F.video | F.audio)
 async def handle_files(message: Message):
     user_id = message.from_user.id
@@ -129,30 +119,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ИСПРАВЛЕННЫЙ GET /files
 @app.get("/api/files")
 async def get_files(user_id: int, folder_id: str = None, mode: str = 'strict'):
     query = supabase.table("items").select("*").eq("user_id", user_id)
     
     if mode == 'global':
-        # Только файлы, без папок
         query = query.neq("type", "folder")
-    
     elif mode == 'folders':
-        # НОВЫЙ РЕЖИМ: Только папки (для модалки выбора)
         query = query.eq("type", "folder")
-        
     elif folder_id and folder_id != "null" and folder_id != "root":
-        # Строго внутри папки
         query = query.eq("parent_id", folder_id)
     else:
-        # Строго в корне
         query = query.is_("parent_id", "null")
         
     query = query.order("type", desc=True).order("created_at", desc=True)
     return query.execute().data
 
-# ... Остальные эндпоинты без изменений (Create, Delete, Download, Preview, Move) ...
 class FolderRequest(BaseModel):
     user_id: int
     name: str
@@ -165,6 +147,19 @@ async def create_folder(req: FolderRequest):
         if parent == "null" or parent == "": parent = None
         new_folder = {"user_id": req.user_id, "name": req.name, "type": "folder", "parent_id": parent}
         supabase.table("items").insert(new_folder).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# НОВАЯ ФУНКЦИЯ: Переименование
+class RenameRequest(BaseModel):
+    item_id: str
+    new_name: str
+
+@app.post("/api/rename")
+async def rename_item(req: RenameRequest):
+    try:
+        supabase.table("items").update({"name": req.new_name}).eq("id", req.item_id).execute()
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -230,4 +225,4 @@ async def move_file(req: MoveRequest):
 
 @app.get("/")
 async def root():
-    return {"message": "Telegram Cloud v2.2 Fixed"}
+    return {"message": "Tg Cloud v2.3 Renaming & Nested Folders"}
