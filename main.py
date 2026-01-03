@@ -186,7 +186,7 @@ async def command_start(message: Message, command: CommandObject):
         # Replace with your Vercel app URL
         await message.answer("Привет! Отправь мне файлы для сохранения или открой Mini App.", 
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                 [InlineKeyboardButton(text="📱 Открыть Tg Cloud", web_app={"url": "https://my-tg-cloud-app.vercel.app"})] 
+                                 [InlineKeyboardButton(text="Открыть Tg Cloud", web_app={"url": "https://tg-cloud-frontend.vercel.app"})] 
                              ]))
 
 @dp.callback_query(F.data.startswith("save_"))
