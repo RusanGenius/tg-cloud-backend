@@ -15,26 +15,24 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, C
 from aiogram.filters import CommandStart, CommandObject
 import aiohttp 
 
-# --- КОНФИГУРАЦИЯ ---
+# --- CONFIGURATION ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-# Замените на свой юзернейм без @ (для админских прав)
 ADMIN_USERNAME = "astermaneiro"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# --- HELPER FUNCTIONS ---
 
 def check_is_blocked(user_id: int):
-    """Проверка блокировки пользователя. Вызывает 403, если заблокирован."""
     try:
         res = supabase.table("users").select("username, is_blocked").eq("id", user_id).single().execute()
         if res.data:
-            # Админа нельзя заблокировать
+            # Admin cannot be blocked
             if res.data['username'] == ADMIN_USERNAME: return
             if res.data.get('is_blocked', False):
                 raise HTTPException(status_code=403, detail="USER_BLOCKED")
@@ -44,7 +42,6 @@ def check_is_blocked(user_id: int):
         pass
 
 def get_folder_tree_text(user_id, folder_id, indent=0):
-    """Рекурсивное построение текстового дерева папки."""
     items = supabase.table("items").select("*").eq("user_id", user_id).eq("parent_id", folder_id).execute().data
     items.sort(key=lambda x: (x['type'] != 'folder', x['name']))
     
@@ -59,7 +56,7 @@ def get_folder_tree_text(user_id, folder_id, indent=0):
     return text
 
 async def copy_folder_recursive(source_folder_id, target_user_id, target_parent_id=None):
-    """Рекурсивное копирование папки другому пользователю."""
+    """Recursively copies a folder to another user."""
     folder_res = supabase.table("items").select("*").eq("id", source_folder_id).single().execute()
     if not folder_res.data: return
     
@@ -89,7 +86,7 @@ async def copy_folder_recursive(source_folder_id, target_user_id, target_parent_
             supabase.table("items").insert(new_file).execute()
 
 async def send_folder_contents(chat_id, folder_id):
-    """Рекурсивная отправка файлов в чат."""
+    """Recursively sends files to a chat."""
     items = supabase.table("items").select("*").eq("parent_id", folder_id).execute().data
     items.sort(key=lambda x: (x['type'] != 'folder', x['name']))
 
@@ -105,12 +102,12 @@ async def send_folder_contents(chat_id, folder_id):
                     await bot.send_video(chat_id, item['file_id'], caption=item['name'])
                 else:
                     await bot.send_document(chat_id, item['file_id'], caption=item['name'])
-                await asyncio.sleep(0.3) # Анти-флуд
+                await asyncio.sleep(0.3) # Anti-flood delay
             except:
                 pass
 
 
-# --- ЛОГИКА ОПЛАТЫ (STARS) ---
+# --- PAYMENT LOGIC (STARS) ---
 
 @dp.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
@@ -122,7 +119,7 @@ async def successful_payment(message: Message):
     await message.answer(f"🌟 Спасибо за поддержку! Получено звёзд: {payment_info.total_amount}")
 
 
-# --- ХЕНДЛЕРЫ БОТА ---
+# --- BOT HANDLERS ---
 
 @dp.message(CommandStart())
 async def command_start(message: Message, command: CommandObject):
@@ -136,7 +133,7 @@ async def command_start(message: Message, command: CommandObject):
 
     args = command.args
     
-    # 1. ШЕРИНГ ФАЙЛА
+    # 1. FILE SHARING
     if args and args.startswith("file_"):
         requested_uuid = args.replace("file_", "")
         try:
@@ -163,7 +160,7 @@ async def command_start(message: Message, command: CommandObject):
         except:
              await message.answer("Некорректная ссылка.")
     
-    # 2. ШЕРИНГ ПАПКИ
+    # 2. FOLDER SHARING
     elif args and args.startswith("folder_"):
         folder_uuid = args.replace("folder_", "")
         try:
@@ -186,7 +183,7 @@ async def command_start(message: Message, command: CommandObject):
             await message.answer("Некорректная ссылка на папку.")
             
     else:
-        # Замените URL на ссылку вашего приложения на Vercel
+        # Replace with your Vercel app URL
         await message.answer("Привет! Отправь мне файлы для сохранения или открой Mini App.", 
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                  [InlineKeyboardButton(text="📱 Открыть Tg Cloud", web_app={"url": "https://my-tg-cloud-app.vercel.app"})] 
@@ -219,7 +216,7 @@ async def cb_view_folder(callback: CallbackQuery):
     folder_id = callback.data.split("_")[1]
     await callback.answer()
     
-    # Получаем инфо о папке для user_id владельца
+    # Get folder info for the owner's user_id
     folder_res = supabase.table("items").select("user_id, name").eq("id", folder_id).single().execute()
     if not folder_res.data:
         await callback.message.answer("Папка не найдена.")
@@ -235,7 +232,7 @@ async def cb_view_folder(callback: CallbackQuery):
 async def handle_files(message: Message):
     user_id = message.from_user.id
     
-    # Проверка блокировки
+    # Check for block
     try: check_is_blocked(user_id)
     except: await message.answer("⛔ Ваш аккаунт заблокирован администратором."); return
 
@@ -272,7 +269,7 @@ async def handle_files(message: Message):
             print(e)
             await message.answer("Ошибка сохранения.")
 
-# --- API ИНИЦИАЛИЗАЦИЯ ---
+# --- API INITIALIZATION ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -290,7 +287,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- МОДЕЛИ REQUEST ---
+# --- REQUEST MODELS ---
 
 class AdminRequest(BaseModel):
     admin_id: int
@@ -325,17 +322,17 @@ class InvoiceRequest(BaseModel):
     title: str = "Поддержка автора"
     description: str = "Донат на развитие проекта"
 
-# --- ЭНДПОИНТЫ API: ADMIN ---
+# --- API ENDPOINTS: ADMIN ---
 
 @app.post("/api/admin/users")
 async def get_all_users(req: AdminRequest):
-    # Проверка админа
+    # Check if user is admin
     admin = supabase.table("users").select("username").eq("id", req.admin_id).single().execute()
     if not admin.data or admin.data['username'] != ADMIN_USERNAME:
         raise HTTPException(403, "Access Denied")
     
     users = supabase.table("users").select("*").order("id", desc=True).execute().data
-    # Админ всегда сверху
+    # Admin is always on top
     users.sort(key=lambda u: u['username'] != ADMIN_USERNAME)
     return users
 
@@ -345,7 +342,7 @@ async def toggle_block_user(req: AdminRequest):
     if not admin.data or admin.data['username'] != ADMIN_USERNAME:
         raise HTTPException(403, "Access Denied")
     
-    if req.target_user_id == req.admin_id: return {"status": "error"} # Нельзя блочить себя
+    if req.target_user_id == req.admin_id: return {"status": "error"} # Cannot block self
 
     curr = supabase.table("users").select("is_blocked").eq("id", req.target_user_id).single().execute()
     new_status = not curr.data.get('is_blocked', False)
@@ -366,7 +363,7 @@ async def delete_user_admin(req: AdminRequest):
     return {"status": "ok"}
 
 
-# --- ЭНДПОИНТЫ API: CLIENT ---
+# --- API ENDPOINTS: CLIENT ---
 
 @app.get("/api/profile")
 async def get_profile_stats(user_id: int):
@@ -438,7 +435,7 @@ async def rename_item(req: RenameRequest):
 
 @app.post("/api/delete")
 async def delete_item(req: ItemRequest):
-    """Обычное удаление: если папка, файлы выпадают в корень."""
+    """Normal deletion: if it's a folder, files are moved to the root."""
     try:
         item = supabase.table("items").select("type").eq("id", req.item_id).execute()
         if item.data and item.data[0]['type'] == 'folder':
@@ -450,7 +447,7 @@ async def delete_item(req: ItemRequest):
 
 @app.post("/api/delete_folder_recursive")
 async def delete_folder_recursive_api(req: ItemRequest):
-    """Рекурсивное удаление папки со всем содержимым."""
+    """Recursively deletes a folder with all its contents."""
     try:
         async def recursive_del(folder_id):
              children = supabase.table("items").select("id, type").eq("parent_id", folder_id).execute().data
@@ -507,7 +504,7 @@ async def generate_invoice(req: InvoiceRequest):
             title=req.title,
             description=req.description,
             payload="donate",
-            provider_token="", # Пустой токен для Stars
+            provider_token="", # Empty token for Stars
             currency="XTR",
             prices=[LabeledPrice(label="Stars", amount=req.amount)]
         )
