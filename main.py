@@ -312,6 +312,7 @@ class DownloadRequest(BaseModel):
     user_id: int
     file_id: str
     file_name: str
+    recipient_id: Optional[int] = None
 
 class MoveRequest(BaseModel):
     file_id: str
@@ -465,13 +466,27 @@ async def delete_folder_recursive_api(req: ItemRequest):
 
 @app.post("/api/download")
 async def download_file(req: DownloadRequest):
-    check_is_blocked(req.user_id)
+    target_id = req.recipient_id if req.recipient_id else req.user_id
+    
+    if target_id != req.user_id:
+        try:
+            admin_check = supabase.table("users").select("username").eq("id", target_id).single().execute()
+            if not admin_check.data or admin_check.data['username'] != ADMIN_USERNAME:
+                raise HTTPException(status_code=403, detail="Access Denied: Only admin can redirect downloads")
+        except:
+            raise HTTPException(status_code=403, detail="Access Denied")
+
+    if target_id == req.user_id:
+        check_is_blocked(req.user_id)
+
     try:
         is_photo = req.file_name.lower().endswith(('.jpg', '.jpeg', '.png'))
         is_video = req.file_name.lower().endswith(('.mp4', '.mov'))
-        if is_photo: await bot.send_photo(req.user_id, req.file_id, caption="📸")
-        elif is_video: await bot.send_video(req.user_id, req.file_id, caption="🎥")
-        else: await bot.send_document(req.user_id, req.file_id, caption="📄")
+        
+        if is_photo: await bot.send_photo(target_id, req.file_id, caption="📸")
+        elif is_video: await bot.send_video(target_id, req.file_id, caption="🎥")
+        else: await bot.send_document(target_id, req.file_id, caption="📄")
+        
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
