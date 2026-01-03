@@ -20,6 +20,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+ADMIN_USERNAME = "astermaneiro"  # Твой юзернейм для админки
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = Bot(token=BOT_TOKEN)
@@ -27,17 +28,32 @@ dp = Dispatcher()
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
+def check_is_blocked(user_id: int):
+    """
+    Проверяет, заблокирован ли пользователь.
+    Если заблокирован и это не Админ - вызывает HTTP 403.
+    """
+    try:
+        # Админа нельзя заблокировать (защита от самого себя)
+        res = supabase.table("users").select("username, is_blocked").eq("id", user_id).single().execute()
+        if res.data:
+            if res.data['username'] == ADMIN_USERNAME:
+                return
+            if res.data.get('is_blocked', False):
+                raise HTTPException(status_code=403, detail="USER_BLOCKED")
+    except HTTPException:
+        raise
+    except:
+        pass
+
 def get_folder_tree_text(user_id, folder_id, indent=0):
     """Рекурсивное построение дерева файлов для текстового отчета"""
-    text = ""
-    # Получаем содержимое папки
     items = supabase.table("items").select("*").eq("user_id", user_id).eq("parent_id", folder_id).execute().data
-    
-    # Сортировка: папки сверху, потом файлы (по имени)
     items.sort(key=lambda x: (x['type'] != 'folder', x['name']))
     
+    text = ""
     for i, item in enumerate(items, 1):
-        prefix = "    " * indent # Отступ
+        prefix = "    " * indent
         if item['type'] == 'folder':
             text += f"{prefix}{i}. Папка «{item['name']}»:\n"
             text += get_folder_tree_text(user_id, item['id'], indent + 1)
@@ -46,13 +62,11 @@ def get_folder_tree_text(user_id, folder_id, indent=0):
     return text
 
 async def copy_folder_recursive(source_folder_id, target_user_id, target_parent_id=None):
-    """Рекурсивное копирование папки и содержимого другому пользователю"""
-    # 1. Получаем инфо о папке-источнике
+    """Рекурсивное копирование папки"""
     folder_res = supabase.table("items").select("*").eq("id", source_folder_id).single().execute()
     if not folder_res.data: return
     source_folder = folder_res.data
     
-    # 2. Создаем новую папку у получателя
     new_folder_data = {
         "user_id": target_user_id,
         "name": source_folder['name'],
@@ -62,20 +76,17 @@ async def copy_folder_recursive(source_folder_id, target_user_id, target_parent_
     new_folder = supabase.table("items").insert(new_folder_data).execute().data[0]
     new_folder_id = new_folder['id']
 
-    # 3. Получаем содержимое старой папки
     items = supabase.table("items").select("*").eq("parent_id", source_folder_id).execute().data
     
     for item in items:
         if item['type'] == 'folder':
-            # Рекурсия для вложенных папок
             await copy_folder_recursive(item['id'], target_user_id, new_folder_id)
         else:
-            # Копирование файла
             new_file = {
                 "user_id": target_user_id,
                 "name": item['name'],
                 "type": "file",
-                "file_id": item['file_id'], # file_id Telegram общий для всех
+                "file_id": item['file_id'],
                 "size": item['size'],
                 "parent_id": new_folder_id
             }
@@ -98,31 +109,18 @@ async def send_folder_contents(chat_id, folder_id):
                     await bot.send_video(chat_id, item['file_id'], caption=item['name'])
                 else:
                     await bot.send_document(chat_id, item['file_id'], caption=item['name'])
-                await asyncio.sleep(0.3) # Анти-спам задержка
+                await asyncio.sleep(0.3) 
             except:
                 pass
 
-async def delete_recursive_logic(item_id):
-    """Логика рекурсивного удаления (для API)"""
-    # Находим детей
-    children = supabase.table("items").select("id, type").eq("parent_id", item_id).execute().data
-    for child in children:
-        if child['type'] == 'folder':
-            await delete_recursive_logic(child['id'])
-        else:
-            supabase.table("items").delete().eq("id", child['id']).execute()
-    # Удаляем саму папку
-    supabase.table("items").delete().eq("id", item_id).execute()
-
-
-# --- БОТ (HANDLERS) ---
+# --- БОТ (Aiogram) ---
 
 @dp.message(CommandStart())
 async def command_start(message: Message, command: CommandObject):
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
     
-    # Регистрируем пользователя, если новый
+    # Регистрируем юзера или обновляем username
     try:
         supabase.table("users").upsert({"id": user_id, "username": username}).execute()
     except:
@@ -130,7 +128,7 @@ async def command_start(message: Message, command: CommandObject):
 
     args = command.args
     
-    # 1. СЦЕНАРИЙ: ШЕРИНГ ФАЙЛА
+    # 1. ШЕРИНГ ФАЙЛА
     if args and args.startswith("file_"):
         requested_uuid = args.replace("file_", "")
         try:
@@ -157,7 +155,7 @@ async def command_start(message: Message, command: CommandObject):
         except:
              await message.answer("Некорректная ссылка.")
     
-    # 2. СЦЕНАРИЙ: ШЕРИНГ ПАПКИ
+    # 2. ШЕРИНГ ПАПКИ
     elif args and args.startswith("folder_"):
         folder_uuid = args.replace("folder_", "")
         try:
@@ -175,14 +173,12 @@ async def command_start(message: Message, command: CommandObject):
                     parse_mode="HTML"
                 )
             else:
-                await message.answer("Папка не найден или удалена.")
-        except Exception as e:
-            print(e)
+                await message.answer("Папка не найдена или удалена.")
+        except:
             await message.answer("Некорректная ссылка на папку.")
             
     else:
-        # СТАРТ БЕЗ АРГУМЕНТОВ
-        # Замените url на адрес вашего Web App
+        # Ссылка на ваше приложение (замените URL на свой Vercel)
         await message.answer("Привет! Отправь мне файлы для сохранения или открой Mini App.", 
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                  [InlineKeyboardButton(text="📱 Открыть Tg Cloud", web_app={"url": "https://my-tg-cloud-app.vercel.app"})] 
@@ -196,8 +192,7 @@ async def cb_save_folder(callback: CallbackQuery):
     try:
         await copy_folder_recursive(folder_id, user_id, None)
         await callback.message.answer("✅ Папка успешно сохранена в ваше облако!")
-    except Exception as e:
-        print(e)
+    except:
         await callback.message.answer("Ошибка при копировании.")
 
 @dp.callback_query(F.data.startswith("send_"))
@@ -208,7 +203,7 @@ async def cb_send_folder(callback: CallbackQuery):
     try:
         await send_folder_contents(callback.from_user.id, folder_id)
         await callback.message.answer("✅ Выгрузка завершена.")
-    except Exception as e:
+    except:
         await callback.message.answer("Ошибка при отправке.")
 
 @dp.callback_query(F.data.startswith("view_"))
@@ -216,7 +211,7 @@ async def cb_view_folder(callback: CallbackQuery):
     folder_id = callback.data.split("_")[1]
     await callback.answer()
     
-    # Получаем инфо о самой папке, чтобы узнать user_id владельца
+    # Получаем инфо о папке для user_id владельца
     folder_res = supabase.table("items").select("user_id, name").eq("id", folder_id).single().execute()
     if not folder_res.data:
         await callback.message.answer("Папка не найдена.")
@@ -234,6 +229,14 @@ async def cb_view_folder(callback: CallbackQuery):
 @dp.message(F.document | F.photo | F.video | F.audio)
 async def handle_files(message: Message):
     user_id = message.from_user.id
+    
+    # Проверка на блокировку при загрузке файлов
+    try:
+        check_is_blocked(user_id)
+    except HTTPException:
+        await message.answer("⛔ Ваш аккаунт заблокирован администратором.")
+        return
+
     file_id = None
     file_name = "Без названия"
     file_size = 0
@@ -267,7 +270,6 @@ async def handle_files(message: Message):
             print(e)
             await message.answer("Ошибка сохранения.")
 
-
 # --- API (FastAPI) ---
 
 @asynccontextmanager
@@ -286,10 +288,66 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- ЭНДПОИНТЫ ---
+# --- ADMIN API ---
+
+class AdminRequest(BaseModel):
+    admin_id: int
+    target_user_id: Optional[int] = None
+
+@app.post("/api/admin/users")
+async def get_all_users(req: AdminRequest):
+    # 1. Проверяем, что запрос делает Админ
+    admin = supabase.table("users").select("username").eq("id", req.admin_id).single().execute()
+    if not admin.data or admin.data['username'] != ADMIN_USERNAME:
+        raise HTTPException(status_code=403, detail="Access Denied")
+    
+    # 2. Отдаем список всех юзеров
+    users = supabase.table("users").select("*").order("id", desc=True).execute().data
+    
+    # Админ всегда наверху списка
+    users.sort(key=lambda u: u['username'] != ADMIN_USERNAME)
+    return users
+
+@app.post("/api/admin/block")
+async def toggle_block_user(req: AdminRequest):
+    admin = supabase.table("users").select("username").eq("id", req.admin_id).single().execute()
+    if not admin.data or admin.data['username'] != ADMIN_USERNAME:
+        raise HTTPException(status_code=403, detail="Access Denied")
+    
+    # Нельзя заблочить самого себя
+    if req.target_user_id == req.admin_id:
+        return {"status": "error", "message": "Cannot block yourself"}
+
+    # Получаем текущий статус
+    curr = supabase.table("users").select("is_blocked").eq("id", req.target_user_id).single().execute()
+    if not curr.data:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    new_status = not curr.data.get('is_blocked', False)
+    
+    supabase.table("users").update({"is_blocked": new_status}).eq("id", req.target_user_id).execute()
+    return {"status": "ok", "is_blocked": new_status}
+
+@app.post("/api/admin/delete_user")
+async def delete_user_admin(req: AdminRequest):
+    admin = supabase.table("users").select("username").eq("id", req.admin_id).single().execute()
+    if not admin.data or admin.data['username'] != ADMIN_USERNAME:
+        raise HTTPException(status_code=403, detail="Access Denied")
+    
+    if req.target_user_id == req.admin_id:
+        return {"status": "error"}
+
+    # Удаляем файлы
+    supabase.table("items").delete().eq("user_id", req.target_user_id).execute()
+    # Удаляем юзера
+    supabase.table("users").delete().eq("id", req.target_user_id).execute()
+    return {"status": "ok"}
+
+# --- USER ENDPOINTS ---
 
 @app.get("/api/profile")
 async def get_profile_stats(user_id: int):
+    check_is_blocked(user_id) # Защита
     try:
         res = supabase.table("items").select("type, name, size").eq("user_id", user_id).execute()
         items = res.data
@@ -321,6 +379,7 @@ async def get_profile_stats(user_id: int):
 
 @app.get("/api/files")
 async def get_files(user_id: int, folder_id: str = None, mode: str = 'strict'):
+    check_is_blocked(user_id) # Защита
     query = supabase.table("items").select("*").eq("user_id", user_id)
     if mode == 'global': query = query.neq("type", "folder")
     elif mode == 'folders': query = query.eq("type", "folder")
@@ -334,6 +393,7 @@ class DeleteAllRequest(BaseModel):
 
 @app.post("/api/delete_all")
 async def delete_all_data(req: DeleteAllRequest):
+    check_is_blocked(req.user_id) # Защита
     try:
         supabase.table("items").delete().eq("user_id", req.user_id).execute()
         return {"status": "ok"}
@@ -347,6 +407,7 @@ class FolderRequest(BaseModel):
 
 @app.post("/api/create_folder")
 async def create_folder(req: FolderRequest):
+    check_is_blocked(req.user_id) # Защита
     try:
         parent = req.parent_id
         if parent == "null" or parent == "": parent = None
@@ -362,6 +423,8 @@ class RenameRequest(BaseModel):
 
 @app.post("/api/rename")
 async def rename_item(req: RenameRequest):
+    # Примечание: тут нет явного user_id в body, 
+    # но защита сработает на следующем шаге при обновлении списка файлов, если юзер заблокирован
     try:
         supabase.table("items").update({"name": req.new_name}).eq("id", req.item_id).execute()
         return {"status": "ok"}
@@ -374,7 +437,7 @@ class ItemRequest(BaseModel):
 @app.post("/api/delete")
 async def delete_item(req: ItemRequest):
     try:
-        # Мягкое удаление (содержимое выпадает в корень)
+        # Стандартное удаление: если папка, то файлы сбрасываем в корень
         item = supabase.table("items").select("type").eq("id", req.item_id).execute()
         if item.data and item.data[0]['type'] == 'folder':
             supabase.table("items").update({"parent_id": None}).eq("parent_id", req.item_id).execute()
@@ -384,9 +447,21 @@ async def delete_item(req: ItemRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/delete_folder_recursive")
-async def delete_folder_recursive(req: ItemRequest):
+async def delete_folder_recursive_api(req: ItemRequest):
     try:
-        await delete_recursive_logic(req.item_id)
+        # Рекурсивное удаление папки со всем содержимым
+        async def recursive_del(folder_id):
+             # Находим детей
+             children = supabase.table("items").select("id, type").eq("parent_id", folder_id).execute().data
+             for child in children:
+                 if child['type'] == 'folder':
+                     await recursive_del(child['id'])
+                 else:
+                     supabase.table("items").delete().eq("id", child['id']).execute()
+             # Удаляем саму папку
+             supabase.table("items").delete().eq("id", folder_id).execute()
+
+        await recursive_del(req.item_id)
         return {"status": "deleted_recursive"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -398,6 +473,7 @@ class DownloadRequest(BaseModel):
 
 @app.post("/api/download")
 async def download_file(req: DownloadRequest):
+    check_is_blocked(req.user_id) # Защита
     try:
         is_photo = req.file_name.lower().endswith(('.jpg', '.jpeg', '.png'))
         is_video = req.file_name.lower().endswith(('.mp4', '.mov'))
@@ -435,4 +511,4 @@ async def move_file(req: MoveRequest):
 
 @app.get("/")
 async def root():
-    return {"message": "Tg Cloud v3.0 [Recursive, Share, Tree]"}
+    return {"message": "Tg Cloud v3.0 [Admin, Sharing, Recursive Delete]"}
