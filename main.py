@@ -116,7 +116,7 @@ async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
 @dp.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
 async def successful_payment(message: Message):
     payment_info = message.successful_payment
-    await message.answer(f"🌟 Спасибо за поддержку! Получено звёзд: {payment_info.total_amount}")
+    await message.answer(f"⭐ Спасибо за поддержку! Получено звёзд: {payment_info.total_amount}")
 
 
 # --- BOT HANDLERS ---
@@ -124,7 +124,11 @@ async def successful_payment(message: Message):
 @dp.message(CommandStart())
 async def command_start(message: Message, command: CommandObject):
     user_id = message.from_user.id
-    username = message.from_user.username or "Unknown"
+    
+    # Logic to fix missing usernames
+    username = message.from_user.username
+    if not username:
+        username = message.from_user.first_name or "User"
     
     try:
         supabase.table("users").upsert({"id": user_id, "username": username}).execute()
@@ -183,7 +187,6 @@ async def command_start(message: Message, command: CommandObject):
             await message.answer("Некорректная ссылка на папку.")
             
     else:
-        # Replace with your Vercel app URL
         await message.answer("Привет! Отправь мне файлы для сохранения или открой Mini App.", 
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                  [InlineKeyboardButton(text="Открыть Tg Cloud", web_app={"url": "https://tg-cloud-frontend.vercel.app"})] 
@@ -519,7 +522,7 @@ async def generate_invoice(req: InvoiceRequest):
             title=req.title,
             description=req.description,
             payload="donate",
-            provider_token="", # Empty token for Stars
+            provider_token="",
             currency="XTR",
             prices=[LabeledPrice(label="Stars", amount=req.amount)]
         )
@@ -530,4 +533,4 @@ async def generate_invoice(req: InvoiceRequest):
 
 @app.get("/")
 async def root():
-    return {"message": "Tg Cloud v4.0 Final"}
+    return {"message": "Tg Cloud v3.0"}
